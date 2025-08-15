@@ -6,7 +6,7 @@ from datetime import datetime
 import random, io, base64
 import plotly.graph_objects as go
 
-print("Starting dashboard (auto-refresh, resolve, pie, CSV import + download)…")
+print("Starting dashboard (functional upgrades: resolve/contain/escalate + audit + MTTR)…")
 
 app = Dash(__name__)
 
@@ -17,7 +17,7 @@ TYPES = [
     "Phishing Email", "Malware Detected", "Unauthorized Login",
     "Brute-force Attempt", "Suspicious DNS", "Data Exfiltration", "Rogue Device",
 ]
-STATUSES = ["Open", "Investigating", "Containment", "Resolved"]
+STATUSES = ["Open", "Investigating", "Containment", "Escalated", "Resolved"]
 
 INITIAL = [
     {"ID": 1, "Type": "Phishing Email",     "Severity": "High",     "Status": "Open",          "Time": "2025-08-14 21:30"},
@@ -26,13 +26,16 @@ INITIAL = [
     {"ID": 4, "Type": "Data Exfiltration",  "Severity": "Critical", "Status": "Open",          "Time": "2025-08-14 21:35"},
 ]
 
+def now_str():
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
 def generate_incident(next_id: int) -> dict:
     return {
         "ID": next_id,
         "Type": random.choice(TYPES),
         "Severity": random.choices(SEVERITIES, weights=SEVERITY_WEIGHTS, k=1)[0],
         "Status": random.choice(STATUSES[:-1]) if random.random() < 0.85 else "Open",
-        "Time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "Time": now_str(),
     }
 
 # Normalize uploaded CSV columns to our schema
@@ -59,9 +62,9 @@ def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
             out["Time"] = pd.to_datetime(time_col, errors="coerce").dt.strftime("%Y-%m-%d %H:%M:%S")
         except Exception:
             out["Time"] = time_col.astype(str)
-        out["Time"] = out["Time"].fillna(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        out["Time"] = out["Time"].fillna(now_str())
     else:
-        out["Time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        out["Time"] = now_str()
     return out[["Type", "Severity", "Status", "Time"]]
 
 def parse_csv_contents(contents: str) -> pd.DataFrame:
@@ -102,8 +105,10 @@ app.layout = html.Div(
                     style={"marginRight": "12px"},
                 ),
                 html.Button("Resolve Selected", id="resolve", n_clicks=0, style={"padding": "8px 12px"}),
-                html.Button("Download CSV", id="download-btn", n_clicks=0, style={"padding": "8px 12px"}),  # NEW
-                dcc.Download(id="download"),  # NEW
+                html.Button("Contain Selected", id="contain", n_clicks=0, style={"padding": "8px 12px"}),
+                html.Button("Escalate Selected", id="escalate", n_clicks=0, style={"padding": "8px 12px"}),
+                html.Button("Download CSV", id="download-btn", n_clicks=0, style={"padding": "8px 12px"}),
+                dcc.Download(id="download"),
                 dcc.Upload(
                     id="uploader",
                     children=html.Div(["📄 Drag & drop CSV here, or ", html.A("click to upload")]),
@@ -112,9 +117,13 @@ app.layout = html.Div(
                     style={"border": "1px dashed #aaa","borderRadius": "10px","padding": "8px 12px","cursor": "pointer"},
                 ),
             ],
-            style={"display": "flex", "alignItems": "center", "gap": "12px", "marginBottom": "12px", "flexWrap": "wrap"},
+            style={"display": "flex", "alignItems": "center", "gap": "10px", "marginBottom": "12px", "flexWrap": "wrap"},
         ),
+
+        # KPIs
         html.Div(id="kpis", style={"display": "flex", "gap": "12px", "flexWrap": "wrap", "marginBottom": "12px"}),
+
+        # Main grid
         html.Div(
             [
                 html.Div(
@@ -140,11 +149,24 @@ app.layout = html.Div(
                     style={"flex": 1, "minWidth": "280px"},
                 ),
             ],
-            style={"display": "flex", "gap": "16px", "alignItems": "stretch"},
+            style={"display": "flex", "gap": "16px", "alignItems": "stretch", "marginBottom": "16px"},
         ),
 
+        # Audit log (read-only)
+        html.H3("Audit Log"),
+        DataTable(
+            id="audit",
+            columns=[{"name": c, "id": c} for c in ["When", "Action", "IDs", "Count"]],
+            data=[],
+            page_size=8,
+            style_cell={"textAlign": "left", "padding": "6px", "fontFamily": "sans-serif"},
+            style_header={"fontWeight": "bold"},
+        ),
+
+        # State stores & timer
         dcc.Store(id="incident-store", data=INITIAL),
         dcc.Store(id="upload-buffer", data=None),
+        dcc.Store(id="audit-log", data=[]),
         dcc.Interval(id="tick", interval=5_000, n_intervals=0),
     ],
     style={"maxWidth": "1100px", "margin": "40px auto", "fontFamily": "sans-serif"},
@@ -161,52 +183,105 @@ def parse_upload(contents):
     df = parse_csv_contents(contents)
     return None if df.empty else df.to_dict("records")
 
-# Single writer: auto-add, resolve, or merge upload
+# SINGLE writer: auto-add, resolve, contain, escalate, or merge upload + update audit
 @app.callback(
     Output("incident-store", "data"),
     Output("incidents", "selected_rows"),
+    Output("audit-log", "data"),
     Input("tick", "n_intervals"),
     Input("resolve", "n_clicks"),
+    Input("contain", "n_clicks"),
+    Input("escalate", "n_clicks"),
     Input("upload-buffer", "data"),
     State("incidents", "derived_virtual_data"),
     State("incidents", "derived_virtual_selected_rows"),
     State("incident-store", "data"),
+    State("audit-log", "data"),
     prevent_initial_call=True,
 )
-def update_store(_n, _clicks, upload_rows, derived, selected_rows, store_data):
+def update_store(_n, _resolve, _contain, _escalate, upload_rows,
+                 derived, selected_rows, store_data, audit_data):
     trigger = ctx.triggered_id
     df_store = pd.DataFrame(store_data or [])
+    audit = list(audit_data or [])
+
+    def log(action, ids):
+        audit.insert(0, {"When": now_str(), "Action": action, "IDs": ",".join(map(str, sorted(ids))) if ids else "-", "Count": len(ids)})
 
     if trigger == "tick":
         next_id = (df_store["ID"].max() + 1) if not df_store.empty else 1
         df_store = pd.concat([pd.DataFrame([generate_incident(next_id)]), df_store], ignore_index=True).head(200)
-        return df_store.to_dict("records"), no_update
+        return df_store.to_dict("records"), no_update, audit
 
-    if trigger == "resolve":
+    if trigger in ("resolve", "contain", "escalate"):
         if derived and selected_rows:
             view_df = pd.DataFrame(derived)
-            selected_ids = set(view_df.iloc[i]["ID"] for i in selected_rows if 0 <= i < len(view_df))
-            if selected_ids and not df_store.empty:
-                df_store.loc[df_store["ID"].isin(selected_ids), "Status"] = "Resolved"
-            return df_store.to_dict("records"), []
-        return df_store.to_dict("records"), []
+            ids = [view_df.iloc[i]["ID"] for i in selected_rows if 0 <= i < len(view_df)]
+            if ids and not df_store.empty:
+                if trigger == "resolve":
+                    df_store.loc[df_store["ID"].isin(ids), "Status"] = "Resolved"
+                elif trigger == "contain":
+                    df_store.loc[df_store["ID"].isin(ids), "Status"] = "Containment"
+                elif trigger == "escalate":
+                    df_store.loc[df_store["ID"].isin(ids), "Status"] = "Escalated"
+                log(trigger.capitalize(), ids)
+            return df_store.to_dict("records"), [], audit
+        # nothing selected
+        return df_store.to_dict("records"), [], audit
 
     if trigger == "upload-buffer" and upload_rows:
         incoming = pd.DataFrame(upload_rows)
         merged = merge_and_reassign_ids(df_store, incoming, cap=200)
-        return merged.to_dict("records"), no_update
+        log("Import CSV", [])
+        return merged.to_dict("records"), no_update, audit
 
-    return df_store.to_dict("records"), no_update
+    return df_store.to_dict("records"), no_update, audit
 
+# Push store into table
 @app.callback(Output("incidents", "data"), Input("incident-store", "data"))
 def table_from_store(data):
     return data
 
-@app.callback(Output("kpis", "children"), Input("incident-store", "data"))
-def update_kpis(data):
+# KPI pills (adds MTTR based on audit 'Resolved' actions)
+@app.callback(Output("kpis", "children"), Input("incident-store", "data"), Input("audit-log", "data"))
+def update_kpis(data, audit):
     df = pd.DataFrame(data or [])
     counts = df["Severity"].value_counts().reindex(SEVERITIES, fill_value=0).to_dict() if not df.empty else {s:0 for s in SEVERITIES}
     total = int(sum(counts.values()))
+
+    # MTTR: average (ResolvedAt - CreatedAt) based on audit entries
+    mttr = "-"
+    if audit:
+        try:
+            audit_df = pd.DataFrame(audit)
+            resolved_ids = []
+            for _, row in audit_df[audit_df["Action"] == "Resolve"].iterrows():
+                if isinstance(row["IDs"], str) and row["IDs"].strip() != "-":
+                    resolved_ids.extend([int(x) for x in row["IDs"].split(",") if x.strip().isdigit()])
+            if resolved_ids:
+                created = df[df["ID"].isin(resolved_ids)][["ID","Time"]].copy()
+                created["Time"] = pd.to_datetime(created["Time"], errors="coerce")
+                # Approximate resolution time as audit "When"
+                res_when = audit_df[audit_df["Action"] == "Resolve"][["When","IDs"]].copy()
+                res_when["When"] = pd.to_datetime(res_when["When"], errors="coerce")
+                # Expand rows by IDs
+                expanded = []
+                for _, r in res_when.iterrows():
+                    if isinstance(r["IDs"], str):
+                        for x in r["IDs"].split(","):
+                            x = x.strip()
+                            if x.isdigit():
+                                expanded.append({"ID": int(x), "ResolvedAt": r["When"]})
+                res_df = pd.DataFrame(expanded)
+                if not created.empty and not res_df.empty:
+                    merged = pd.merge(created, res_df, on="ID", how="inner")
+                    merged["mins"] = (merged["ResolvedAt"] - merged["Time"]).dt.total_seconds() / 60.0
+                    merged = merged[merged["mins"] >= 0]
+                    if not merged.empty:
+                        mttr = f"{merged['mins'].mean():.1f} min"
+        except Exception:
+            mttr = "-"
+
     def pill(label, value):
         return html.Div(
             [html.Div(label, style={"fontSize": "12px", "opacity": 0.7}),
@@ -214,9 +289,17 @@ def update_kpis(data):
             style={"border":"1px solid #eee","borderRadius":"10px","padding":"10px 14px",
                    "minWidth":"120px","boxShadow":"0 2px 8px rgba(0,0,0,0.06)","background":"#fff"},
         )
-    return [pill("Critical", counts.get("Critical",0)), pill("High", counts.get("High",0)),
-            pill("Medium", counts.get("Medium",0)), pill("Low", counts.get("Low",0)), pill("Total", total)]
 
+    return [
+        pill("Critical", counts.get("Critical",0)),
+        pill("High", counts.get("High",0)),
+        pill("Medium", counts.get("Medium",0)),
+        pill("Low", counts.get("Low",0)),
+        pill("Total", total),
+        pill("MTTR", mttr),
+    ]
+
+# Severity pie chart
 @app.callback(Output("severity-pie", "figure"), Input("incident-store", "data"))
 def severity_pie(data):
     df = pd.DataFrame(data or [])
@@ -225,7 +308,7 @@ def severity_pie(data):
     fig.update_layout(margin=dict(l=10,r=10,t=10,b=10))
     return fig
 
-# NEW: Download current view (respects sort/filter)
+# Download current view (respects sort/filter)
 @app.callback(
     Output("download", "data"),
     Input("download-btn", "n_clicks"),
@@ -238,6 +321,11 @@ def download_csv(n, derived):
         df = pd.DataFrame(columns=["ID", "Type", "Severity", "Status", "Time"])
     return dcc.send_data_frame(df.to_csv, "incidents_export.csv", index=False)
 
-if __name__ == "__main__":
-    app.run_server(debug=False, port=8060, host="127.0.0.1", dev_tools_hot_reload=False)
+# Reflect audit store into audit table
+@app.callback(Output("audit", "data"), Input("audit-log", "data"))
+def audit_to_table(data):
+    return data or []
 
+if __name__ == "__main__":
+    # Dash 2.x: use app.run (run_server is obsolete)
+    app.run(debug=False, port=8060, host="127.0.0.1", dev_tools_hot_reload=False) 
