@@ -1,0 +1,18 @@
+{
+  "roles": {
+    "admin": {
+      "permissions": ["view", "resolve", "contain", "escalate", "delete", "playbooks", "audit"]
+    },
+    "analyst": {
+      "permissions": ["view", "resolve", "contain", "escalate", "playbooks"]
+    },
+    "viewer": {
+      "permissions": ["view"]
+    }
+  },
+  "users": {
+    "alice": "admin",
+    "bob": "analyst",
+    "charlie": "viewer"
+  }
+}
