@@ -1,8 +1,20 @@
 # 🚨 Automated Incident Response Dashboard (AIRD)
+<p align="center">
+  <a href="https://www.python.org/"><img alt="Python" src="https://img.shields.io/badge/Python-3.9-3776AB?logo=python&logoColor=white"></a>
+  <a href="https://dash.plotly.com/"><img alt="Dash" src="https://img.shields.io/badge/Dash-2.16.1-008DE4?logo=plotly&logoColor=white"></a>
+  <a href="https://plotly.com/python/"><img alt="Plotly" src="https://img.shields.io/badge/Plotly-Graphs-3F4F75?logo=plotly&logoColor=white"></a>
+  <a href="https://www.sqlite.org/"><img alt="SQLite" src="https://img.shields.io/badge/SQLite-Persistence-044A64?logo=sqlite&logoColor=white"></a>
+  <a href="#-mitre-attck-integration"><img alt="MITRE ATT&CK" src="https://img.shields.io/badge/MITRE%20ATT%26CK-Mapped-E74C3C"></a>
+  <a href="#-configuration"><img alt="Slack" src="https://img.shields.io/badge/Slack-Notifications-4A154B?logo=slack&logoColor=white"></a>
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/License-MIT-success"></a>
+  <br>
+  <a href="https://github.com/NiassMayor/automated-incident-response-dashboard/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/NiassMayor/automated-incident-response-dashboard?style=social"></a>
+  <a href="https://github.com/NiassMayor/automated-incident-response-dashboard/network/members"><img alt="GitHub forks" src="https://img.shields.io/github/forks/NiassMayor/automated-incident-response-dashboard?style=social"></a>
+</p> 
 
 ![Full Dashboard Screenshot](screenshot/screencapture_AIRD.png)
 
-A **production-style SOC dashboard** built with [Dash](https://dash.plotly.com/) and [Plotly], simulating how real-world Security Operations Centers (SOCs) monitor, triage, and respond to incidents.  
+A **production-style SOC dashboard** built with [Dash](https://dash.plotly.com/) and [Plotly], simulating how real-world Security Operations Centers (SOCs) monitor, triage, and respond to incidents in real time.  
 
 This project bridges the gap between *demo apps* and *true analyst workflows* by combining **automation, analytics, and MITRE ATT&CK alignment** in a single platform.  
 
@@ -49,7 +61,7 @@ It’s not just a coding project. It’s a **SOC analyst’s companion**.
 - **Open vs Resolved trend** chart.  
 - **Risk score** showing the overall SOC risk level.
 
-> 🔍 **MITRE ATT&CK Integration**  
+### 🔍 MITRE ATT&CK  
 > Incidents are mapped to tactics & techniques for faster triage, playbook automation, and framework-aligned reporting.
 The dashboard embeds **MITRE ATT&CK mappings** into every incident workflow.
 
