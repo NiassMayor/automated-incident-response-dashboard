@@ -20,7 +20,7 @@ This project bridges the gap between *demo apps* and *true analyst workflows* by
 
 ---
 
-## 🌍 Why This Project Matters
+##  Why This Project Matters
 
 Modern SOCs are drowning in alerts — phishing, malware, brute-force, exfiltration attempts.  
 Hiring managers want analysts who not only **understand incidents** but can also **build tools that reduce response time, visualize risk, and align with frameworks**.
