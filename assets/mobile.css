@@ -1,0 +1,95 @@
+/* assets/mobile.css */
+
+/* General container max width stays; we’ll handle inner layout */
+body {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Controls: wrap to multiple rows nicely on small screens */
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+/* Make buttons friendly on touch */
+.controls button, .controls .dash-raw-button {
+  min-height: 36px;
+  border-radius: 8px;
+}
+
+/* KPI pills wrap to full width on very small screens */
+.kpis {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.kpis > div {
+  flex: 1 1 160px;      /* grow to fill, min 160px */
+}
+
+/* Two-column → one-column on small screens */
+.main-grid {
+  display: flex;
+  gap: 16px;
+  align-items: stretch;
+}
+@media (max-width: 900px) {
+  .main-grid {
+    flex-direction: column;
+  }
+  .table-wrap {
+    min-width: 0 !important;  /* allow shrinking */
+  }
+  .chart {
+    min-width: 0 !important;
+  }
+}
+
+/* DataTable tweaks: smaller fonts on very small screens */
+@media (max-width: 480px) {
+  .dash-table-container .dash-spreadsheet-container .dash-spreadsheet-inner td,
+  .dash-table-container .dash-spreadsheet-container .dash-spreadsheet-inner th {
+    font-size: 12px;
+    padding: 4px 6px;
+  }
+
+  /* Hide wide/secondary columns on phones: Technique & TechniqueID */
+  .dash-table-container .dash-spreadsheet-container .dash-spreadsheet-inner th[data-dash-column="Technique"],
+  .dash-table-container .dash-spreadsheet-container .dash-spreadsheet-inner td[data-dash-column="Technique"],
+  .dash-table-container .dash-spreadsheet-container .dash-spreadsheet-inner th[data-dash-column="TechniqueID"],
+  .dash-table-container .dash-spreadsheet-container .dash-spreadsheet-inner td[data-dash-column="TechniqueID"] {
+    display: none !important;
+  }
+
+  /* Make the controls/buttons more stackable */
+  .controls > * {
+    flex: 1 1 140px;
+  }
+}
+
+/* Graphs: sensible height on mobile */
+.chart .js-plotly-plot, 
+.chart .dash-graph, 
+.chart {
+  width: 100% !important;
+}
+@media (max-width: 480px) {
+  .chart .js-plotly-plot {
+    height: 320px !important; /* comfortable mobile height */
+  }
+}
+
+/* Make sure tables scroll horizontally when squeezed */
+.dash-table-container .dash-spreadsheet-container {
+  overflow-x: auto !important;
+}
+
+/* Fallback: hide the 7th & 8th columns (TechniqueID, Technique) on narrow screens */
+@media (max-width: 480px) {
+  .dash-spreadsheet-inner table tr > *:nth-child(7),
+  .dash-spreadsheet-inner table tr > *:nth-child(8) {
+    display: none !important;
+  }
+}

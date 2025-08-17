@@ -8,7 +8,7 @@ from typing import Optional
 import random, io, base64, os, sqlite3, requests
 import plotly.graph_objects as go
 
-print("Starting dashboard (Playbooks + Risk + Slack + Analytics + MITRE) …")
+print("Starting dashboard (Playbooks + Risk + Slack + Analytics + MITRE + Local TZ) …")
 
 # ---------------- SQLite persistence ----------------
 DB_PATH = os.path.join("data", "app.db")
@@ -278,6 +278,7 @@ def enrich_mitre(typ: str) -> dict:
         "TechniqueID": meta.get("TechniqueID", "TXXXX"),
     }
 
+# Treat these seeds as UTC timestamps.
 INITIAL = [
     {"ID": 1, "Type": "Phishing Email",     "Severity": "High",     "Status": "Open",          "Time": "2025-08-14 21:30"},
     {"ID": 2, "Type": "Malware Detected",   "Severity": "Critical", "Status": "Investigating", "Time": "2025-08-14 21:31"},
@@ -285,8 +286,9 @@ INITIAL = [
     {"ID": 4, "Type": "Data Exfiltration",  "Severity": "Critical", "Status": "Open",          "Time": "2025-08-14 21:35"},
 ]
 
-def now_str():
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+def now_utc_str():
+    # Always store in UTC
+    return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
 def severity_base(sev: str) -> int:
     return {"Low": 25, "Medium": 50, "High": 75, "Critical": 90}.get(str(sev), 50)
@@ -315,7 +317,7 @@ def generate_incident(next_id: int) -> dict:
     status = random.choice(STATUSES[:-1]) if random.random() < 0.85 else "Open"
     row = {
         "ID": next_id, "Type": typ, "Severity": sev, "Status": status,
-        "Time": now_str(), "Risk": compute_risk_row(typ, sev)
+        "Time": now_utc_str(), "Risk": compute_risk_row(typ, sev)  # store UTC
     }
     row.update(enrich_mitre(typ))
     return row
@@ -340,15 +342,18 @@ def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     })
     out["Severity"] = sev.where(sev.isin(SEVERITIES), "Medium")
     out["Status"] = df.get("Status", "Open").astype(str).str.title().replace({"New":"Open"})
+
+    # Treat incoming times as UTC if parseable; fallback to now UTC
     time_col = df.get("Time")
     if time_col is not None:
         try:
-            out["Time"] = pd.to_datetime(time_col, errors="coerce").dt.strftime("%Y-%m-%d %H:%M:%S")
+            out["Time"] = pd.to_datetime(time_col, errors="coerce", utc=True).dt.strftime("%Y-%m-%d %H:%M:%S")
         except Exception:
             out["Time"] = time_col.astype(str)
-        out["Time"] = out["Time"].fillna(now_str())
+        out["Time"] = out["Time"].fillna(now_utc_str())
     else:
-        out["Time"] = now_str()
+        out["Time"] = now_utc_str()
+
     # Risk
     if "Risk" in df.columns:
         try:
@@ -424,7 +429,7 @@ app = Dash(__name__, suppress_callback_exceptions=True)
 # ---------------- Layout ----------------
 app.layout = html.Div(
     [
-        html.H1("Automated Incident Response Dashboard"),
+        html.H1("Automated Incident Response Dashboard", className="title"),
 
         # Controls
         html.Div(
@@ -449,30 +454,30 @@ app.layout = html.Div(
                     ],
                     value="*",
                     placeholder="Filter by Technique",
-                    style={"minWidth":"260px"}
+                    style={"minWidth":"260px", "flex":"1 1 260px"}
                 ),
-                html.Button("Resolve Selected", id="resolve", n_clicks=0, style={"padding": "8px 12px"}),
-                html.Button("Contain Selected", id="contain", n_clicks=0, style={"padding": "8px 12px"}),
-                html.Button("Escalate Selected", id="escalate", n_clicks=0, style={"padding": "8px 12px"}),
-                html.Button("➕ Add Test Incident", id="add-test", n_clicks=0, style={"padding": "8px 12px"}),
-                html.Button("Download CSV", id="download-btn", n_clicks=0, style={"padding": "8px 12px"}),
+                html.Button("Resolve Selected", id="resolve", n_clicks=0, className="btn"),
+                html.Button("Contain Selected", id="contain", n_clicks=0, className="btn"),
+                html.Button("Escalate Selected", id="escalate", n_clicks=0, className="btn"),
+                html.Button("➕ Add Test Incident", id="add-test", n_clicks=0, className="btn"),
+                html.Button("Download CSV", id="download-btn", n_clicks=0, className="btn"),
                 dcc.Download(id="download"),
                 dcc.Upload(
                     id="uploader",
                     children=html.Div(["📄 Drag & drop CSV here, or ", html.A("click to upload")]),
                     multiple=False,
                     accept=".csv,text/csv",
-                    style={"border": "1px dashed #aaa","borderRadius": "10px","padding": "8px 12px","cursor": "pointer"},
+                    className="uploader",
+                    style={"border": "1px dashed #aaa","borderRadius": "10px","padding": "8px 12px","cursor": "pointer","flex":"1 1 260px"},
                 ),
                 # Reset (with confirm)
-                html.Button("Reset Data", id="reset", n_clicks=0,
-                            style={"padding": "8px 12px", "background": "#e74c3c", "color": "#fff",
-                                   "border": "none", "borderRadius": "6px"}),
+                html.Button("Reset Data", id="reset", n_clicks=0, className="btn danger"),
                 dcc.ConfirmDialog(
                     id="confirm-reset",
                     message="This will delete all incidents & audit logs from local storage and reload seed data. Continue?"
                 ),
             ],
+            className="controls",
             style={"display": "flex", "alignItems": "center", "gap": "10px", "marginBottom": "8px", "flexWrap": "wrap"},
         ),
 
@@ -480,13 +485,13 @@ app.layout = html.Div(
         html.Button("Dismiss", id="dismiss-alert", n_clicks=0, style={"display": "none"}),
 
         # Heartbeat (shows timer activity)
-        html.Div(id="heartbeat", style={"opacity":0.7, "fontSize":"12px", "marginBottom":"6px"}),
+        html.Div(id="heartbeat", className="heartbeat", style={"opacity":0.7, "fontSize":"12px", "marginBottom":"6px"}),
 
         # Notification banner (renders its own visible Dismiss button)
         html.Div(id="alert-banner", style={"marginBottom": "8px"}),
 
         # KPIs
-        html.Div(id="kpis", style={"display": "flex", "gap": "12px", "flexWrap": "wrap", "marginBottom": "12px"}),
+        html.Div(id="kpis", className="kpis", style={"display": "flex", "gap": "12px", "flexWrap": "wrap", "marginBottom": "12px"}),
 
         # Main grid
         html.Div(
@@ -500,7 +505,8 @@ app.layout = html.Div(
                         sort_action="native",
                         filter_action="native",
                         row_selectable="multi",
-                        style_cell={"textAlign": "left", "padding": "6px", "fontFamily": "sans-serif"},
+                        style_table={"overflowX": "auto"},
+                        style_cell={"textAlign": "left", "padding": "6px", "fontFamily": "sans-serif", "minWidth":"80px"},
                         style_header={"fontWeight": "bold"},
                         style_data_conditional=[
                             {"if": {"filter_query": '{Severity} = "Critical"'}, "backgroundColor": "#ffcccc"},
@@ -508,14 +514,17 @@ app.layout = html.Div(
                             {"if": {"filter_query": '{Risk} >= 85'},             "fontWeight": "700"},
                         ],
                     ),
-                    style={"flex": 2, "minWidth": "620px"},
+                    className="incidents-table",
+                    style={"flex": 2, "minWidth": "320px"},
                 ),
                 html.Div(
-                    dcc.Graph(id="severity-pie"),
-                    style={"flex": 1, "minWidth": "280px"},
+                    dcc.Graph(id="severity-pie", style={"width":"100%"}),
+                    className="pie-wrap",
+                    style={"flex": 1, "minWidth": "260px"},
                 ),
             ],
-            style={"display": "flex", "gap": "16px", "alignItems": "stretch", "marginBottom": "16px"},
+            className="grid",
+            style={"display": "flex", "gap": "16px", "alignItems": "stretch", "marginBottom": "16px", "flexWrap":"wrap"},
         ),
 
         # ----- Analytics -----
@@ -530,14 +539,15 @@ app.layout = html.Div(
                         {"label":"Last 30d","value":"30d"},
                         {"label":"All","value":"all"},
                     ],
-                    value="7d",
+                    value="24h",  # default 24h
                     inline=True,
                     style={"marginBottom":"8px"}
                 ),
-                dcc.Graph(id="trend-incidents"),
-                dcc.Graph(id="trend-mttr"),
-                dcc.Graph(id="trend-risk"),
+                dcc.Graph(id="trend-incidents", style={"width":"100%"}),
+                dcc.Graph(id="trend-mttr", style={"width":"100%"}),
+                dcc.Graph(id="trend-risk", style={"width":"100%"}),
             ],
+            className="analytics",
             style={"marginBottom":"24px"}
         ),
 
@@ -548,6 +558,7 @@ app.layout = html.Div(
             columns=[{"name": c, "id": c} for c in ["When", "Action", "IDs", "Count"]],
             data=audit_init,
             page_size=8,
+            style_table={"overflowX":"auto"},
             style_cell={"textAlign": "left", "padding": "6px", "fontFamily": "sans-serif"},
             style_header={"fontWeight": "bold"},
         ),
@@ -556,11 +567,37 @@ app.layout = html.Div(
         dcc.Store(id="incident-store", data=incidents_init),
         dcc.Store(id="upload-buffer", data=None),
         dcc.Store(id="audit-log", data=audit_init),
-        dcc.Store(id="alert-queue", data=[]),  # queue of pending alerts
+        dcc.Store(id="alert-queue", data=[]),   # queue of pending alerts
+        dcc.Store(id="tz-offset-min", data=0),  # browser timezone offset in minutes (UTC -> local)
         dcc.Interval(id="tick", interval=5_000, n_intervals=0, max_intervals=-1),
     ],
-    style={"maxWidth": "1220px", "margin": "40px auto", "fontFamily": "sans-serif"},
+    className="container",
+    style={"maxWidth": "1220px", "margin": "40px auto", "fontFamily": "sans-serif", "padding":"0 10px"},
 )
+
+# ---------------- Clientside: capture browser timezone offset ----------------
+# Returns minutes to ADD to UTC to get local time (e.g., New York EDT = -240)
+app.clientside_callback(
+    """
+    function(n) {
+        try {
+            // JS getTimezoneOffset(): minutes to ADD to local to get UTC (positive for west of GMT)
+            // We want minutes to ADD to UTC to get LOCAL -> negate it.
+            return -new Date().getTimezoneOffset();
+        } catch(e) { return 0; }
+    }
+    """,
+    Output("tz-offset-min", "data"),
+    Input("tick", "n_intervals"),
+)
+
+# ---------------- Helpers for TZ conversion ----------------
+def apply_tz(series, offset_min):
+    try:
+        off = int(offset_min or 0)
+    except Exception:
+        off = 0
+    return pd.to_datetime(series, errors="coerce") + pd.to_timedelta(off, unit="m")
 
 # ---------------- Callbacks ----------------
 
@@ -578,10 +615,10 @@ def parse_upload(contents):
 def open_reset_dialog(n):
     return True
 
-# Heartbeat display
+# Heartbeat display (server time is fine here)
 @app.callback(Output("heartbeat", "children"), Input("tick", "n_intervals"))
 def show_heartbeat(n):
-    return f"⏱️ ticks: {n} · last: {datetime.now().strftime('%H:%M:%S')}"
+    return f"⏱️ ticks: {n} · server: {datetime.utcnow().strftime('%H:%M:%S')} UTC"
 
 # ---------- SINGLE WRITER (playbooks + notifications + risk + events) ----------
 @app.callback(
@@ -615,7 +652,7 @@ def single_writer(_n, add_test_clicks, _resolve, _contain, _escalate, upload_row
 
     def log(action, ids):
         audit.insert(0, {
-            "When": now_str(),
+            "When": now_utc_str(),  # log in UTC
             "Action": action,
             "IDs": ",".join(map(str, sorted(ids))) if ids else "-",
             "Count": len(ids)
@@ -651,8 +688,8 @@ def single_writer(_n, add_test_clicks, _resolve, _contain, _escalate, upload_row
         save_incidents(df_store)
         append_events(pd.DataFrame([new_row]))
         if notify_on and new_row["Severity"] == "Critical":
-            msg = f'CRITICAL: {new_row["Type"]} (ID {new_row["ID"]}) at {new_row["Time"]}'
-            alerts.append({"ts": now_str(), "msg": msg})
+            msg = f'CRITICAL: {new_row["Type"]} (ID {new_row["ID"]}) at {new_row["Time"]} UTC'
+            alerts.append({"ts": now_utc_str(), "msg": msg})
             send_slack(msg)
         return df_store.to_dict("records"), no_update, audit, alerts
 
@@ -675,8 +712,8 @@ def single_writer(_n, add_test_clicks, _resolve, _contain, _escalate, upload_row
 
         # Notify if critical
         if notify_on and new_row["Severity"] == "Critical":
-            msg = f'CRITICAL: {new_row["Type"]} (ID {new_row["ID"]}) at {new_row["Time"]}'
-            alerts.append({"ts": now_str(), "msg": msg})
+            msg = f'CRITICAL: {new_row["Type"]} (ID {new_row["ID"]}) at {new_row["Time"]} UTC'
+            alerts.append({"ts": now_utc_str(), "msg": msg})
             send_slack(msg)
 
         return df_store.to_dict("records"), no_update, audit, alerts
@@ -742,8 +779,8 @@ def single_writer(_n, add_test_clicks, _resolve, _contain, _escalate, upload_row
             if notify_on:
                 for _, r in new_rows.iterrows():
                     if r["Severity"] == "Critical":
-                        msg = f'CRITICAL (import): {r["Type"]} at {r["Time"]}'
-                        alerts.append({"ts": now_str(), "msg": msg})
+                        msg = f'CRITICAL (import): {r["Type"]} at {r["Time"]} UTC'
+                        alerts.append({"ts": now_utc_str(), "msg": msg})
                         send_slack(msg)
 
         return merged.to_dict("records"), no_update, audit, alerts
@@ -751,22 +788,30 @@ def single_writer(_n, add_test_clicks, _resolve, _contain, _escalate, upload_row
     # No change
     return df_store.to_dict("records"), no_update, audit, alerts
 
-# Reflect store into table with MITRE filter (single callback output for incidents.data)
-@app.callback(Output("incidents", "data"),
-              Input("incident-store", "data"),
-              Input("mitre-filter", "value"))
-def table_with_mitre_filter(data, filt):
+# Reflect store into table with MITRE filter and LOCAL time display
+@app.callback(
+    Output("incidents", "data"),
+    Input("incident-store", "data"),
+    Input("mitre-filter", "value"),
+    Input("tz-offset-min", "data"),
+)
+def table_with_mitre_filter(data, filt, tz_offset_min):
     df = pd.DataFrame(data or [])
     if df.empty:
         return []
-    if not filt or filt == "*":
-        return df.to_dict("records")
-    return df[df["Type"] == filt].to_dict("records")
+    if filt and filt != "*":
+        df = df[df["Type"] == filt]
+    # Convert UTC -> local for display
+    df = df.copy()
+    df["Time"] = apply_tz(df["Time"], tz_offset_min).dt.strftime("%Y-%m-%d %H:%M:%S")
+    return df.to_dict("records")
 
-# KPIs + MTTR + Risk + Top Technique (7d)
-@app.callback(Output("kpis", "children"),
-              Input("incident-store", "data"),
-              Input("audit-log", "data"))
+# KPIs + MTTR + Risk + Top Technique (7d) — times displayed local in pills where relevant
+@app.callback(
+    Output("kpis", "children"),
+    Input("incident-store", "data"),
+    Input("audit-log", "data"),
+)
 def update_kpis(data, audit):
     df = pd.DataFrame(data or [])
     counts = df["Severity"].value_counts().reindex(SEVERITIES, fill_value=0).to_dict() if not df.empty else {s:0 for s in SEVERITIES}
@@ -783,9 +828,9 @@ def update_kpis(data, audit):
                     resolved_ids.extend([int(x) for x in row["IDs"].split(",") if x.strip().isdigit()])
             if resolved_ids:
                 created = df[df["ID"].isin(resolved_ids)][["ID","Time"]].copy()
-                created["Time"] = pd.to_datetime(created["Time"], errors="coerce")
+                created["Time"] = pd.to_datetime(created["Time"], errors="coerce")  # UTC
                 res_when = audit_df[audit_df["Action"] == "Resolve"][["When","IDs"]].copy()
-                res_when["When"] = pd.to_datetime(res_when["When"], errors="coerce")
+                res_when["When"] = pd.to_datetime(res_when["When"], errors="coerce")  # UTC
                 expanded = []
                 for _, r in res_when.iterrows():
                     if isinstance(r.get("IDs"), str):
@@ -796,6 +841,7 @@ def update_kpis(data, audit):
                 res_df = pd.DataFrame(expanded)
                 if not created.empty and not res_df.empty:
                     m = pd.merge(created, res_df, on="ID", how="inner")
+                    # Duration is TZ-agnostic in UTC
                     m["mins"] = (m["ResolvedAt"] - m["Time"]).dt.total_seconds() / 60.0
                     m = m[m["mins"] >= 0]
                     if not m.empty:
@@ -816,6 +862,7 @@ def update_kpis(data, audit):
         return html.Div(
             [html.Div(label, style={"fontSize": "12px", "opacity": 0.7}),
              html.Div(str(value), style={"fontSize": "22px", "fontWeight": 700})],
+            className="kpi-pill",
             style={"border":"1px solid #eee","borderRadius":"10px","padding":"10px 14px",
                    "minWidth":"120px","boxShadow":"0 2px 8px rgba(0,0,0,0.06)","background":"#fff"},
         )
@@ -833,7 +880,7 @@ def update_kpis(data, audit):
 
     # Top Technique (7d)
     try:
-        ev7 = load_events_since(datetime.now() - timedelta(days=7))
+        ev7 = load_events_since(datetime.utcnow() - timedelta(days=7))  # UTC range
         toptech = "-"
         if ev7 is not None and not ev7.empty:
             cnt = ev7["TechniqueID"].value_counts()
@@ -847,7 +894,7 @@ def update_kpis(data, audit):
 
     return pills
 
-# Pie chart
+# Pie chart (just counts; not time-dependent)
 @app.callback(Output("severity-pie", "figure"), Input("incident-store", "data"))
 def severity_pie(data):
     df = pd.DataFrame(data or [])
@@ -857,15 +904,15 @@ def severity_pie(data):
     fig.update_layout(margin=dict(l=10, r=10, t=10, b=10))
     return fig
 
-# ----- Analytics charts -----
+# ----- Analytics charts (grouped by LOCAL day) -----
 def range_to_since(value: str):
     if value == "24h":
-        return datetime.now() - timedelta(hours=24)
+        return datetime.utcnow() - timedelta(hours=24)
     if value == "7d":
-        return datetime.now() - timedelta(days=7)
+        return datetime.utcnow() - timedelta(days=7)
     if value == "30d":
-        return datetime.now() - timedelta(days=30)
-    return None  # all
+        return datetime.utcnow() - timedelta(days=30)
+    return None  # all (UTC)
 
 @app.callback(
     Output("trend-incidents", "figure"),
@@ -874,19 +921,24 @@ def range_to_since(value: str):
     Input("time-range", "value"),
     Input("incident-store", "data"),
     Input("audit-log", "data"),
+    Input("tz-offset-min", "data"),
 )
-def render_analytics(range_value, _incidents, _audit):
-    since = range_to_since(range_value)
+def render_analytics(range_value, _incidents, _audit, tz_offset_min):
+    since_utc = range_to_since(range_value)
 
     # Events for counts & risk
-    ev = load_events_since(since)
+    ev = load_events_since(since_utc)
+    incidents_fig = go.Figure(); incidents_fig.update_layout(title="Incidents per Day (by Severity)")
+    mttr_fig = go.Figure(); mttr_fig.update_layout(title="MTTR Trend (min)")
+    risk_fig = go.Figure(); risk_fig.update_layout(title="Average Risk per Day")
+
     if ev is None or ev.empty:
-        incidents_fig = go.Figure(); incidents_fig.update_layout(title="Incidents per Day (by Severity)")
-        mttr_fig = go.Figure(); mttr_fig.update_layout(title="MTTR Trend (min)")
-        risk_fig = go.Figure(); risk_fig.update_layout(title="Average Risk per Day")
         return incidents_fig, mttr_fig, risk_fig
 
-    ev["Day"] = ev["When"].dt.date
+    # Convert to local for grouping
+    ev_local_when = apply_tz(ev["When"], tz_offset_min)
+    ev = ev.assign(Day=ev_local_when.dt.date)
+
     # Incidents per day by severity
     counts = ev.groupby(["Day","Severity"]).size().unstack(fill_value=0).reindex(columns=SEVERITIES, fill_value=0)
     incidents_fig = go.Figure()
@@ -900,17 +952,17 @@ def render_analytics(range_value, _incidents, _audit):
     risk_fig.add_trace(go.Scatter(x=risk.index, y=risk.values, mode="lines+markers", name="Avg Risk"))
     risk_fig.update_layout(title="Average Risk per Day", xaxis_title="Day", yaxis_title="Avg Risk (0–100)")
 
-    # MTTR per day based on Resolve actions
-    au = load_audit_since(since)
+    # MTTR per day based on Resolve actions (keep durations in UTC; group by local resolve day)
+    au = load_audit_since(since_utc)
     con = _connect()
     inc_table = pd.read_sql_query("SELECT ID, Time FROM incidents", con)
     con.close()
     mttr_series = pd.Series(dtype=float)
     if au is not None and not au.empty and not inc_table.empty:
-        inc_table["Time"] = pd.to_datetime(inc_table["Time"], errors="coerce")
+        inc_table["Time"] = pd.to_datetime(inc_table["Time"], errors="coerce")  # UTC
         res_rows = []
         for _, row in au[au["Action"]=="Resolve"].iterrows():
-            when = pd.to_datetime(row["When"], errors="coerce")
+            when_utc = pd.to_datetime(row["When"], errors="coerce")
             ids = []
             if isinstance(row["IDs"], str) and row["IDs"].strip() != "-":
                 for x in row["IDs"].split(","):
@@ -919,17 +971,19 @@ def render_analytics(range_value, _incidents, _audit):
                         ids.append(int(x))
             for rid in ids:
                 created = inc_table.loc[inc_table["ID"]==rid, "Time"]
-                if not created.empty and pd.notna(when):
-                    minutes = (when - created.iloc[0]).total_seconds() / 60.0
+                if not created.empty and pd.notna(when_utc):
+                    minutes = (when_utc - created.iloc[0]).total_seconds() / 60.0
                     if minutes >= 0:
-                        res_rows.append({"Day": when.date(), "mins": minutes})
+                        # group by LOCAL day of resolution
+                        when_local = apply_tz(pd.Series([when_utc]), tz_offset_min).iloc[0]
+                        res_rows.append({"Day": when_local.date(), "mins": minutes})
         if res_rows:
             mttr_df = pd.DataFrame(res_rows)
             mttr_series = mttr_df.groupby("Day")["mins"].mean()
-    mttr_fig = go.Figure()
     if not mttr_series.empty:
+        mttr_fig = go.Figure()
         mttr_fig.add_trace(go.Scatter(x=mttr_series.index, y=mttr_series.values, mode="lines+markers", name="MTTR"))
-    mttr_fig.update_layout(title="MTTR Trend (min)", xaxis_title="Day", yaxis_title="Avg Minutes")
+        mttr_fig.update_layout(title="MTTR Trend (min)", xaxis_title="Day", yaxis_title="Avg Minutes")
 
     return incidents_fig, mttr_fig, risk_fig
 
@@ -948,14 +1002,14 @@ def render_banner(alerts):
         ],
         style={
            "background": "#fff4f4",
-"border": "1px solid #f5c2c2",
-"color": "#7a1f1f",
-"padding": "8px 10px",
-"borderRadius": "8px",
+           "border": "1px solid #f5c2c2",
+           "color": "#7a1f1f",
+           "padding": "8px 10px",
+           "borderRadius": "8px",
         }
     )
 
-# Download current view (respects sort/filter)
+# Download current view (respects sort/filter). Uses DataTable derived view, which is already LOCAL time.
 @app.callback(
     Output("download", "data"),
     Input("download-btn", "n_clicks"),
@@ -970,11 +1024,92 @@ def download_csv(n, derived):
     present = [c for c in cols if c in df.columns]
     return dcc.send_data_frame(df[present].to_csv, "incidents_export.csv", index=False)
 
-# Reflect audit store into audit table
-@app.callback(Output("audit", "data"), Input("audit-log", "data"))
-def audit_to_table(data):
-    return data or []
+# Reflect audit store into audit table (display LOCAL time)
+@app.callback(
+    Output("audit", "data"),
+    Input("audit-log", "data"),
+    Input("tz-offset-min", "data"),
+)
+def audit_to_table(data, tz_offset_min):
+    rows = data or []
+    if not rows:
+        return []
+    df = pd.DataFrame(rows)
+    if "When" in df.columns:
+        df = df.copy()
+        df["When"] = apply_tz(df["When"], tz_offset_min).dt.strftime("%Y-%m-%d %H:%M:%S")
+    return df.to_dict("records")
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "10000"))
     app.run(debug=False, host="0.0.0.0", port=port, dev_tools_hot_reload=False)
+
+    # --- Layout (only showing wrappers that need className) ---
+app.layout = html.Div(
+    [
+        html.H1("Automated Incident Response Dashboard", className="title"),
+
+        # Controls
+        html.Div(
+            [
+                # ... (all your controls)
+            ],
+            className="controls",  # <— important
+        ),
+
+        html.Button("Dismiss", id="dismiss-alert", n_clicks=0, style={"display": "none"}),
+
+        html.Div(id="heartbeat", style={"opacity":0.7, "fontSize":"12px", "marginBottom":"6px"}),
+        html.Div(id="alert-banner", style={"marginBottom": "8px"}),
+
+        # KPIs
+        html.Div(id="kpis", className="kpis"),
+
+        # Main grid
+        html.Div(
+            [
+                html.Div(
+                    DataTable(
+                        id="incidents",
+                        # ...
+                        style_table={"overflowX": "auto"},  # <— ensures horizontal scroll on small screens
+                    ),
+                    className="table-wrap",  # <— important
+                ),
+                html.Div(
+                    dcc.Graph(id="severity-pie", config={"responsive": True}),
+                    className="chart pie-wrap",  # <— important
+                ),
+            ],
+            className="main-grid",  # <— important
+        ),
+
+        # Analytics
+        html.Div(
+            [
+                html.Div("Analytics Window:", style={"fontWeight":"600"}),
+                dcc.RadioItems(
+                    id="time-range",
+                    # ...
+                ),
+                html.Div(dcc.Graph(id="trend-incidents", config={"responsive": True}), className="chart"),
+                html.Div(dcc.Graph(id="trend-mttr", config={"responsive": True}), className="chart"),
+                html.Div(dcc.Graph(id="trend-risk", config={"responsive": True}), className="chart"),
+            ],
+            className="analytics",  # lets your CSS target graphs easily
+        ),
+
+        html.H3("Audit Log"),
+        html.Div(
+            DataTable(
+                id="audit",
+                # ...
+                style_table={"overflowX": "auto"},  # same scroll safety
+            ),
+            className="table-wrap",
+        ),
+
+        # Stores & timer...
+    ],
+    className="container",  # optional if you want to control outer width/padding globally
+)
