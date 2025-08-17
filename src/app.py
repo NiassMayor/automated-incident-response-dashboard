@@ -976,4 +976,5 @@ def audit_to_table(data):
     return data or []
 
 if __name__ == "__main__":
-    app.run(debug=False, port=8060, host="127.0.0.1", dev_tools_hot_reload=False) 
+    port = int(os.environ.get("PORT", "10000"))
+    app.run(debug=False, host="0.0.0.0", port=port, dev_tools_hot_reload=False)
