@@ -206,3 +206,7 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
+# Ignore database files
+data/*.db
+data/*.db-shm
+data/*.db-wal
